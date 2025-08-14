@@ -160,6 +160,8 @@ group.add_argument('--head-init-bias', default=None, type=float,
                    help='Head initialization bias value')
 group.add_argument('--torchcompile-mode', type=str, default=None,
                     help="torch.compile mode (default: None).")
+group.add_argument('--use-escnn', action='store_true', default=False,
+                    help="Use custom loader of escnn model (default: False).")
 
 # scripting / codegen
 scripting_group = group.add_mutually_exclusive_group()
