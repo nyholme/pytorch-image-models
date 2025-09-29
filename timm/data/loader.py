@@ -62,6 +62,7 @@ def fast_collate(batch):
             tensor[i].copy_(batch[i][0])
         return tensor, targets
     else:
+        print(f"Unknown data type: {type(batch[0][0])}")
         assert False
 
 

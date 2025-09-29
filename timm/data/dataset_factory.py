@@ -27,7 +27,7 @@ try:
 except ImportError:
     has_imagenet = False
 
-from .dataset import IterableImageDataset, ImageDataset
+from .dataset import IterableImageDataset, ImageDataset, ImageNetFromZip
 
 _TORCH_BASIC_DS = dict(
     cifar10=CIFAR10,
@@ -213,6 +213,11 @@ def create_dataset(
             seed=seed,
             input_img_mode=input_img_mode,
             **kwargs
+        )
+    elif name.startswith('mimer/'):
+        ds = ImageNetFromZip(
+            root,
+            train=is_training
         )
     else:
         # FIXME support more advance split cfg for ImageFolder/Tar datasets in the future
