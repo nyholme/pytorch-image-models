@@ -485,15 +485,11 @@ class SteerableConvNeXtIsotropic(nn.Module):
         self.depth = depth
         self.dim = dim
 
-        # TODO: Implement embedding/downsampling module
-        # The isotropic ConvNeXt uses a Conv2d with kernel_size=16 and stride=16, but we can't since
-        # it interacts poorly with the our equivariances.
-        #self.embedder = None
 
         s1, s2 = 2, 2
         pad1, pad2 = 3, 3
         k1, k2 = 7, 7
-        c1, c2 = 32, 64
+        c1, c2 = 32, 64 # here c2 has to be equal to dim, but before setting c2=dim we need to adjust k, pad and s accordingly
         self.embedder = enn.SequentialModule(
             enn.R2Conv(enn.FieldType(self.gs, in_chans * [self.gs.trivial_repr]), 
                        enn.FieldType(self.gs, c1 * [self.gs.regular_repr]), 
@@ -503,53 +499,33 @@ class SteerableConvNeXtIsotropic(nn.Module):
                           padding=pad2, kernel_size=k2, stride=s2, bias=False)
         )
 
-        # I removed the "drop_path" functionality. Might want to look into what it does.
         self.blocks = nn.Sequential(*[SteerableConvNeXtBlock(
                                     gs=self.gs,
                                     dim=dim, 
                                     )
                                     for i in range(depth)])
 
-        #self.norm = LayerNorm(dim, eps=1e-6) # final norm layer
         self.groupnorm = enn.GroupPooling(enn.FieldType(self.gs, [self.gs.regular_repr] * dim))
-
-        #self.norm = ChannelFirstLayerNorm(dim, eps=1e-6) # final norm layer
-        
-        #self.norm = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
         self.norm = nn.LayerNorm((dim, ), eps=1e-6)
 
         self.head = nn.Linear(dim, num_classes)
 
-        #self.apply(self._init_weights)
-        #self.head.weight.data.mul_(head_init_scale)
-        #self.head.bias.data.mul_(head_init_scale)
 
-    #def _init_weights(self, m):
-    #    if isinstance(m, (nn.Conv2d, nn.Linear)):
-    #        trunc_normal_(m.weight, std=.02)
-    #        nn.init.constant_(m.bias, 0)
+        # TODO: i removed custom weight init, check if needed
 
     def forward_features(self, x):
-        #print("Input shape: ", x.shape)
         x = self.embedder(x)
-        #print("After embedder: ", x.shape)
         x = self.blocks(x)
-        #print("After blocks: ", x.shape)
         x = self.groupnorm(x)
-        #print("After groupnorm: ", x.shape)
         x = x.tensor
-        #print("After .tensor: ", x.shape)
         x = x.mean([-2, -1])  # global average pooling, (N, C, H, W) -> (N, C)
-        #print("After mean: ", x.shape)
         x = self.norm(x)
         return x 
 
     def forward(self, x):
         x = enn.GeometricTensor(x, enn.FieldType(self.gs, self.in_chans * [self.gs.trivial_repr]))
         x = self.forward_features(x)
-        #print("After forward_features: ", x.shape)
         x = self.head(x)
-        #print("After head: ", x.shape)
         return x
     
 
@@ -567,19 +543,16 @@ class SteerableConvNeXtBlock(nn.Module):
     """
     def __init__(self, gs, dim):
         super().__init__()
-
         self.gs = gs
 
         self.dwconv = enn.R2Conv(self.hidden_type(dim), self.hidden_type(dim), kernel_size=7, padding=3, groups=dim, bias=False)
 
         # TODO: Does FieldNorm fill the same function as LayerNorm here?
         self.norm = enn.FieldNorm(self.hidden_type(dim), eps=1e-6, affine=True)
-
         self.pwconv1 = enn.R2Conv(self.hidden_type(dim), self.hidden_type(4 * dim), kernel_size=1, bias=False)
 
         # TODO: is GELU implemented in escnn?
         self.act = enn.ELU(self.hidden_type(4 * dim))
-
         self.pwconv2 = enn.R2Conv(self.hidden_type(4 * dim), self.hidden_type(dim), kernel_size=1, bias=False)
 
         # TODO: replace layer_scale_init_values and/or drop_path with something else?
@@ -599,10 +572,7 @@ class SteerableConvNeXtBlock(nn.Module):
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        #if self.gamma is not None:
-        #    x = self.gamma * x
-
-        #x = input + self.drop_path(x)
+        # this res connection is reglarised in ConvNeXt
         x = input + x
         return x
 
