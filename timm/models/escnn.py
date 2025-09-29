@@ -103,7 +103,7 @@ def cnsteerablecnn(pretrained: bool = False, **kwargs) -> CNSteerableCNN:
 
 
 
-# Here is Chat-code for a Steerable CNN model using a downsampler, fixed-res layers, and a readout.
+# This is our draft scalable Steerable CNN model using a downsampler, fixed-res layers, and a readout.
 """
 Steerable CNN model using the `escnn` package.
 
@@ -145,59 +145,58 @@ def _get_gspace(group_name: str):
     Supported names: 'C_1' (trivial), 'C_4' (4-fold rotations),
     'D_1' (reflection only), 'D_4' (rotations+reflections of order 4).
     """
-    name = group_name.upper()
-    if name == 'C_1':
-        return gspaces.trivialOnR2()
-    elif name == 'C_4':
-        return gspaces.rot2dOnR2(4)
-    elif name == 'D_1':
-        # reflection only (order 2)
-        return gspaces.flip2dOnR2()
-    elif name == 'D_4':
-        return gspaces.flipRot2dOnR2(4)
-    else:
+    group_dict = {
+        'C_1': gspaces.trivialOnR2(),
+        'C_4': gspaces.rot2dOnR2(4),
+        'D_1': gspaces.flip2dOnR2(),
+        'D_4': gspaces.flipRot2dOnR2(4)
+    }
+    key = group_name.upper()
+    if key not in group_dict:
         raise ValueError(f"Unsupported group: {group_name}. Choose one of C_1, C_4, D_1, D_4")
+    return group_dict[key]
 
-
-class SteerableCNN(nn.Module):
+class ScalableSteerableCNN(nn.Module):
     def __init__(
         self,
         L: int,
         group_name: str,
-        N: int,
+        n_latent: int,
         num_classes: int = 1000,
-        *,
         base_width: int = 64,
         activation: str = "relu",  # 'relu' | 'elu' | 'fourier_elu'
         use_batchnorm: bool = True,
         dropout: Optional[float] = None,
         use_residual: bool = False,
         widen_factor: float = 1.0,
+        latent_res: int = 14
     ):
         """Construct the steerable CNN.
 
         Important:
-        - L must be divisible by 14 (so that two downsampling convs can reach exact 14x14)
+        - L must be divisible by latent_res (so that two downsampling convs can reach exact latent_res x latent_res)
           The code tries to pick integer strides to perform the downsampling in two layers.
 
         Optional flags (for ablations):
         - use_batchnorm: whether to use equivariant batchnorm (InnerBatchNorm / IIDBatchNorm2d)
         - dropout: dropout probability after GroupPooling (if set)
-        - use_residual: add simple residual connections in the N layers
+        - use_residual: add simple residual connections in the n_latent layers
         - activation: choice of equivariant nonlinearity
         - widen_factor: scale the channel counts
+        - latent_res: spatial resolution after downsampling (default 14, e.g. 16)
         """
         super().__init__()
 
         # --- sanity checks and setup
-        if L % 14 != 0:
-            raise ValueError("Input size L must be divisible by 14 so that two downsampling layers can reach 14x14 exactly.")
+        if L % latent_res != 0:
+            raise ValueError(f"Input size L must be divisible by latent_res ({latent_res}) so that two downsampling layers can reach {latent_res}x{latent_res} exactly.")
 
         self.L = L
         self.group_name = group_name
-        self.N = N
+        self.n_latent = n_latent
         self.num_classes = num_classes
         self.base_width = int(base_width * widen_factor)
+        self.latent_res = latent_res
 
         gs = _get_gspace(group_name)
         self.gspace = gs
@@ -211,7 +210,7 @@ class SteerableCNN(nn.Module):
             return enn.FieldType(gs, [gs.regular_repr] * channels)
 
         # compute downsampling strides for first two layers
-        total_down = L // 14  # integer
+        total_down = L // latent_res  # integer
         # pick a factorization into two integer strides. Prefer moderately small strides (2-8).
         s1 = min(8, max(1, int(math.sqrt(total_down))))
         # adjust s1 to be a divisor of total_down
@@ -244,7 +243,7 @@ class SteerableCNN(nn.Module):
             layers.append(enn.InnerBatchNorm(out1_type))
         layers.append(self._get_activation(out1_type, activation))
 
-        # Second downsampling R2Conv: keep increasing channels and downsample to 14x14
+        # Second downsampling R2Conv: keep increasing channels and downsample to latent_res x latent_res
         out2_type = hidden_type(c2)
         k2 = 3
         pad2 = k2 // 2
@@ -253,11 +252,11 @@ class SteerableCNN(nn.Module):
             layers.append(enn.InnerBatchNorm(out2_type))
         layers.append(self._get_activation(out2_type, activation))
 
-        # Now the spatial resolution should be 14 x 14
+        # Now the spatial resolution should be latent_res x latent_res
 
-        # N steerable layers that keep resolution constant
+        # n_latent steerable layers that keep resolution constant
         cur_type = out2_type
-        for i in range(N):
+        for i in range(n_latent):
             out_type = hidden_type(c_mid)
             k = 3
             pad = k // 2
@@ -339,7 +338,7 @@ class SteerableCNN(nn.Module):
             # z_geo is a GeometricTensor, after GroupPooling it should be trivial reprs -> we can get tensor
             z = z_geo.tensor
 
-        # z is now a plain torch.Tensor with shape (B, C, 14, 14)
+        # z is now a plain torch.Tensor with shape (B, C, latent_res, latent_res)
         out = self.readout(z)
         return out
 
@@ -386,18 +385,49 @@ class _SimpleReadout(nn.Module):
         self.head = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor):
-        # x: (B, C, 14, 14)
+        # x: (B, C, latent_res, latent_res)
         if self.head is None:
             self._build_head(x.shape[1])
         return self.head(x)
 
 
 # Example quick test (run in an environment that has escnn installed):
-# model = SteerableCNN(L=224, group_name='C_4', N=4, base_width=64, use_batchnorm=True, dropout=0.5)
+# model = ScalableSteerableCNN(L=224, group_name='C_4', n_latent=4, base_width=64, use_batchnorm=True, dropout=0.5)
 # x = torch.randn(2,3,224,224)
 # y = model(x)
 # print(y.shape)  # -> (2, 1000)
 
 if __name__ == '__main__':
-    m = SteerableCNN(L=224, group_name='C_4', N=4)
+    m = ScalableSteerableCNN(L=224, group_name='C_4', n_latent=4)
     print(m)
+
+
+
+@register_model
+def cnsteerablecnn(pretrained: bool = False, **kwargs) -> ScalableSteerableCNN:
+    """Constructs a Scalable Steerable CNN model using layers from the ESCNN package.
+    """
+    if pretrained:
+        raise ValueError("Support for pretrained ESCNN models not yet implemented.")
+    print("Creating a Scalable Steerable CNN model using default class constructor. If " \
+          "something seems wrong, should probably implement using full " \
+            "`build_model_with_cfg` wrapper.")
+
+    # Default arguments for ScalableSteerableCNN
+    default_model_args = dict(
+        L=64,
+        group_name='C_4',
+        n_latent=4,
+        num_classes=1000,
+        base_width=64,
+        activation="relu",
+        use_batchnorm=True,
+        dropout=None,
+        use_residual=False,
+        widen_factor=1.0,
+        latent_res=16
+    )
+    for key in ['pretrained_cfg', 'pretrained_cfg_overlay', 'cache_dir', 'in_chans', 'drop_rate']:
+        kwargs.pop(key, None)
+    model = ScalableSteerableCNN(**dict(default_model_args, **kwargs))
+    return model
