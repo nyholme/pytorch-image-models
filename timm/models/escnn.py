@@ -431,3 +431,183 @@ def cnsteerablecnn(pretrained: bool = False, **kwargs) -> ScalableSteerableCNN:
         kwargs.pop(key, None)
     model = ScalableSteerableCNN(**dict(default_model_args, **kwargs))
     return model
+
+
+
+
+class SteerableConvNeXtIsotropic(nn.Module):
+    r""" ConvNeXt
+        Adaption of isotropic ConvNeXt to use Steerable CNN layers from the escnn package.
+        For isotropic ConNext, see Section 3.3 of https://arxiv.org/pdf/2201.03545.pdf
+
+    Args:
+        in_chans (int): Number of input image channels. Default: 3
+        num_classes (int): Number of classes for classification head. Default: 1000
+        depth (tuple(int)): Number of blocks. Default: 18.
+        dims (int): Feature dimension. Default: 384
+        drop_path_rate (float): Stochastic depth rate. Default: 0.
+        layer_scale_init_value (float): Init value for Layer Scale. Default: 0.
+        head_init_scale (float): Init scaling value for classifier weights and biases. Default: 1.
+    """
+    def __init__(self,
+                 group='D_1',
+                 in_chans=3,
+                 num_classes=1000, 
+                 depth=18,
+                 dim=384,
+                 **kwargs,
+                 ):
+        super().__init__()
+
+        self.gs = _get_gspace(group)
+        self.in_chans = in_chans
+        self.num_classes = num_classes
+        self.depth = depth
+        self.dim = dim
+
+        # TODO: Implement embedding/downsampling module
+        # The isotropic ConvNeXt uses a Conv2d with kernel_size=16 and stride=16, but we can't since
+        # it interacts poorly with the our equivariances.
+        #self.embedder = None
+
+        s1, s2 = 2, 2
+        pad1, pad2 = 3, 3
+        k1, k2 = 7, 7
+        c1, c2 = 32, 64
+        self.embedder = enn.SequentialModule(
+            enn.R2Conv(enn.FieldType(self.gs, in_chans * [self.gs.trivial_repr]), 
+                       enn.FieldType(self.gs, c1 * [self.gs.regular_repr]), 
+                       padding=pad1, kernel_size=k1, stride=s1, bias=False),
+            enn.R2Conv(enn.FieldType(self.gs, c1 * [self.gs.regular_repr]),
+                          enn.FieldType(self.gs, c2 * [self.gs.regular_repr]), 
+                          padding=pad2, kernel_size=k2, stride=s2, bias=False)
+        )
+
+        # I removed the "drop_path" functionality. Might want to look into what it does.
+        self.blocks = nn.Sequential(*[SteerableConvNeXtBlock(
+                                    gs=self.gs,
+                                    dim=dim, 
+                                    )
+                                    for i in range(depth)])
+
+        #self.norm = LayerNorm(dim, eps=1e-6) # final norm layer
+        self.groupnorm = enn.GroupPooling(enn.FieldType(self.gs, [self.gs.regular_repr] * dim))
+
+        #self.norm = ChannelFirstLayerNorm(dim, eps=1e-6) # final norm layer
+        
+        #self.norm = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        self.norm = nn.LayerNorm((dim, ), eps=1e-6)
+
+        self.head = nn.Linear(dim, num_classes)
+
+        #self.apply(self._init_weights)
+        #self.head.weight.data.mul_(head_init_scale)
+        #self.head.bias.data.mul_(head_init_scale)
+
+    #def _init_weights(self, m):
+    #    if isinstance(m, (nn.Conv2d, nn.Linear)):
+    #        trunc_normal_(m.weight, std=.02)
+    #        nn.init.constant_(m.bias, 0)
+
+    def forward_features(self, x):
+        #print("Input shape: ", x.shape)
+        x = self.embedder(x)
+        #print("After embedder: ", x.shape)
+        x = self.blocks(x)
+        #print("After blocks: ", x.shape)
+        x = self.groupnorm(x)
+        #print("After groupnorm: ", x.shape)
+        x = x.tensor
+        #print("After .tensor: ", x.shape)
+        x = x.mean([-2, -1])  # global average pooling, (N, C, H, W) -> (N, C)
+        #print("After mean: ", x.shape)
+        x = self.norm(x)
+        return x 
+
+    def forward(self, x):
+        x = enn.GeometricTensor(x, enn.FieldType(self.gs, self.in_chans * [self.gs.trivial_repr]))
+        x = self.forward_features(x)
+        #print("After forward_features: ", x.shape)
+        x = self.head(x)
+        #print("After head: ", x.shape)
+        return x
+    
+
+
+class SteerableConvNeXtBlock(nn.Module):
+    r""" ConvNeXt Block. There are two equivalent implementations:
+    (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
+    (2) DwConv -> Permute to (N, H, W, C); LayerNorm (channels_last) -> Linear -> GELU -> Linear; Permute back
+    We use (1) as we find it faster in PyTorch with torch.compile
+    
+    Args:
+        dim (int): Number of input channels.
+        drop_path (float): Stochastic depth rate. Default: 0.0 (removed)
+        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6. (removed)
+    """
+    def __init__(self, gs, dim):
+        super().__init__()
+
+        self.gs = gs
+
+        self.dwconv = enn.R2Conv(self.hidden_type(dim), self.hidden_type(dim), kernel_size=7, padding=3, groups=dim, bias=False)
+
+        # TODO: Does FieldNorm fill the same function as LayerNorm here?
+        self.norm = enn.FieldNorm(self.hidden_type(dim), eps=1e-6, affine=True)
+
+        self.pwconv1 = enn.R2Conv(self.hidden_type(dim), self.hidden_type(4 * dim), kernel_size=1, bias=False)
+
+        # TODO: is GELU implemented in escnn?
+        self.act = enn.ELU(self.hidden_type(4 * dim))
+
+        self.pwconv2 = enn.R2Conv(self.hidden_type(4 * dim), self.hidden_type(dim), kernel_size=1, bias=False)
+
+        # TODO: replace layer_scale_init_values and/or drop_path with something else?
+        #self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((1, dim, 1, 1)), 
+        #                            requires_grad=True) if layer_scale_init_value > 0 else None
+        # self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+
+    def hidden_type(self, channels: int):
+        # channels is number of scalar fields; choose regular_repr to capture group structure
+        return enn.FieldType(self.gs, [self.gs.regular_repr] * channels)
+
+    def forward(self, x):
+        input = x
+        x = self.dwconv(x)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.pwconv2(x)
+        #if self.gamma is not None:
+        #    x = self.gamma * x
+
+        #x = input + self.drop_path(x)
+        x = input + x
+        return x
+
+
+class ChannelFirstLayerNorm(nn.Module):
+    r""" LayerNorm that supports channels_first data format. 
+    The ordering of the dimensions in the inputs is (batch_size, channels, height, width).
+    """
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+    
+    def forward(self, x):
+        x = x - x.mean(1, keepdim=True)
+        s = x.pow(2).mean(1, keepdim=True)
+        x = x / torch.sqrt(s + self.eps)
+        x = self.weight[:, None, None] * x + self.bias[:, None, None]
+        return x
+    
+
+@register_model
+def steerable_convnext_isotropic_small(pretrained=False, **kwargs):
+    model = SteerableConvNeXtIsotropic(depth=18, dim=64, **kwargs)
+    if pretrained:                                     
+        raise NotImplementedError()
+    return model
