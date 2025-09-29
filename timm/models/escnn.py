@@ -84,7 +84,7 @@ def cnsteerablecnn(pretrained: bool = False, **kwargs) -> CNSteerableCNN:
     if pretrained:
         raise ValueError("Support for pretrained ESCNN models not yet implemented.")
     print("Creating a C_N Steerable CNN model using default class constructor. If " \
-          "something seem wrong, should probably implement using full " \
+          "something seems wrong, should probably implement using full " \
             "`build_model_with_cfg` wrapper.")
 
     default_model_args = dict(
