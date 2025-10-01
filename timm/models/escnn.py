@@ -547,12 +547,12 @@ class SteerableConvNeXtBlock(nn.Module):
 
         self.dwconv = enn.R2Conv(self.hidden_type(dim), self.hidden_type(dim), kernel_size=7, padding=3, groups=dim, bias=False)
 
-        # TODO: Does FieldNorm fill the same function as LayerNorm here?
-        self.norm = enn.FieldNorm(self.hidden_type(dim), eps=1e-6, affine=True)
+        # The original ConvNeXt has a layernorm here, while I replaced it with an ecnn-batchnorm 
+        self.norm = enn.IIDBatchNorm2d(self.hidden_type(dim), eps=1e-6, affine=True)
+        # TODO: what to replace these pointwise convs with?
         self.pwconv1 = enn.R2Conv(self.hidden_type(dim), self.hidden_type(4 * dim), kernel_size=1, bias=False)
 
-        # TODO: is GELU implemented in escnn?
-        self.act = enn.ELU(self.hidden_type(4 * dim))
+        self.act = enn.GELU(self.hidden_type(4 * dim))
         self.pwconv2 = enn.R2Conv(self.hidden_type(4 * dim), self.hidden_type(dim), kernel_size=1, bias=False)
 
         # TODO: replace layer_scale_init_values and/or drop_path with something else?
@@ -572,7 +572,7 @@ class SteerableConvNeXtBlock(nn.Module):
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        # this res connection is reglarised in ConvNeXt
+        # this res connection is regularised in ConvNeXt
         x = input + x
         return x
 
