@@ -577,24 +577,6 @@ class SteerableConvNeXtBlock(nn.Module):
         return x
 
 
-class ChannelFirstLayerNorm(nn.Module):
-    r""" LayerNorm that supports channels_first data format. 
-    The ordering of the dimensions in the inputs is (batch_size, channels, height, width).
-    """
-    def __init__(self, normalized_shape, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.bias = nn.Parameter(torch.zeros(normalized_shape))
-        self.eps = eps
-    
-    def forward(self, x):
-        x = x - x.mean(1, keepdim=True)
-        s = x.pow(2).mean(1, keepdim=True)
-        x = x / torch.sqrt(s + self.eps)
-        x = self.weight[:, None, None] * x + self.bias[:, None, None]
-        return x
-    
-
 @register_model
 def steerable_convnext_isotropic_small(pretrained=False, **kwargs):
     model = SteerableConvNeXtIsotropic(depth=18, dim=64, **kwargs)
