@@ -583,3 +583,11 @@ def steerable_convnext_isotropic_small(pretrained=False, **kwargs):
     if pretrained:                                     
         raise NotImplementedError()
     return model
+
+
+@register_model
+def steerable_convnext_isotropic_tiny(pretrained=False, **kwargs):
+    model = SteerableConvNeXtIsotropic(depth=8, dim=64, **kwargs)
+    if pretrained:                                     
+        raise NotImplementedError()
+    return model
