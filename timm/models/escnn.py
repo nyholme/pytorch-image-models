@@ -490,14 +490,25 @@ class SteerableConvNeXtIsotropic(nn.Module):
         pad1, pad2 = 3, 3
         k1, k2 = 7, 7
         c1, c2 = 32, 64 # here c2 has to be equal to dim, but before setting c2=dim we need to adjust k, pad and s accordingly
+
+        # TODO: this embedder/downsampler seems way larger than that of ConvNeXt, 
+        # can we find something better and maybe more comparable to ConvNeXt?
         self.embedder = enn.SequentialModule(
             enn.R2Conv(enn.FieldType(self.gs, in_chans * [self.gs.trivial_repr]), 
                        enn.FieldType(self.gs, c1 * [self.gs.regular_repr]), 
                        padding=pad1, kernel_size=k1, stride=s1, bias=False),
+            #enn.InnerBatchNorm(enn.FieldType(self.gs, c1 * [self.gs.regular_repr]), eps=1e-6, affine=True),
+            enn.GELU(enn.FieldType(self.gs, c1 * [self.gs.regular_repr])),
             enn.R2Conv(enn.FieldType(self.gs, c1 * [self.gs.regular_repr]),
                           enn.FieldType(self.gs, c2 * [self.gs.regular_repr]), 
-                          padding=pad2, kernel_size=k2, stride=s2, bias=False)
+                          padding=pad2, kernel_size=k2, stride=s2, bias=False),
+            #enn.InnerBatchNorm(enn.FieldType(self.gs, c2 * [self.gs.regular_repr]), eps=1e-6, affine=True),
+            enn.GELU(enn.FieldType(self.gs, c2 * [self.gs.regular_repr]))
         )
+
+        #self.embedder = enn.R2Conv(enn.FieldType(self.gs, in_chans * [self.gs.trivial_repr]), 
+                                  #enn.FieldType(self.gs, dim * [self.gs.regular_repr]), 
+                                  #kernel_size=16, stride=16, bias=False)
 
         self.blocks = nn.Sequential(*[SteerableConvNeXtBlock(
                                     gs=self.gs,
